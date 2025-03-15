@@ -92,6 +92,11 @@ Here use the COPY INTO code from the code folder.
 
 Run the  INSERT INTO statements related to dwh.dim tables to move data from staging to the data warehouse.
 
+**LINK FOR THE CODE**
+
+***https://app.snowflake.com/qysxxbh/fh83412/wTztiSElsDr/query***
+
+
 
 ***Execute Analytical Queries***
 
