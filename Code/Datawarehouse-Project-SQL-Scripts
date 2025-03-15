@@ -1,0 +1,298 @@
+CREATE DATABASE IF NOT EXISTS datawarehouse; -- CREATING THE DATABASE 
+CREATE SCHEMA IF NOT EXISTS staging; -- CREATING THE SCHEMA FOR STAGING 
+CREATE SCHEMA IF NOT EXISTS dwh; -- CREATING THE SCHEMA FOR THE DATA WAREHOUSE
+
+
+
+-- Products Table
+CREATE OR REPLACE TABLE dwh.products (
+    ProductKey INT AUTOINCREMENT PRIMARY KEY,
+    ProductID INT UNIQUE,
+    ProductName STRING,
+    Price FLOAT,
+    CategoryID INT
+);
+
+-- Customers Table
+CREATE OR REPLACE TABLE dwh.customers (
+    CustomerKey INT AUTOINCREMENT PRIMARY KEY,
+    CustomerID INT UNIQUE,
+    FirstName STRING,
+    LastName STRING,
+    Address STRING
+);
+
+-- Employees Table
+CREATE OR REPLACE TABLE dwh.employees (
+    EmployeeKey INT AUTOINCREMENT PRIMARY KEY,
+    EmployeeID INT UNIQUE,
+    FirstName STRING,
+    LastName STRING,
+    BirthDate DATE,
+    HireDate TIMESTAMP
+);
+
+-- Sales Table
+CREATE OR REPLACE TABLE dwh.sales (
+    SalesKey INT AUTOINCREMENT PRIMARY KEY,
+    SalesID INT UNIQUE,
+    SalesPersonID INT,
+    CustomerID INT,
+    ProductID INT,
+    Quantity INT,
+    TotalPrice FLOAT,
+    SalesDate TIMESTAMP
+);
+
+
+--  ETL Implementation
+CREATE OR REPLACE STORAGE INTEGRATION gcs_integration
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = 'GCS'
+ENABLED = TRUE
+STORAGE_ALLOWED_LOCATIONS = ('gcs://hw_4dw/');
+
+CREATE OR REPLACE STAGE gcs_stage
+STORAGE_INTEGRATION = gcs_integration
+URL = 'gcs://hw_4dw/';
+
+-- Staging Tables
+CREATE OR REPLACE TABLE staging.products (
+    ProductID INT,
+    ProductName STRING,
+    Price FLOAT,
+    CategoryID INT,
+    Class STRING,
+    ModifyDate STRING,
+    Resistant STRING,
+    IsAllergic STRING,
+    VitalityDays INT
+);
+
+CREATE OR REPLACE TABLE staging.customers (
+    CustomerID INT,
+    FirstName STRING,
+    MiddleInitial STRING,
+    LastName STRING,
+    CityID INT,
+    Address STRING
+);
+
+CREATE OR REPLACE TABLE staging.employees (
+    EmployeeID INT,
+    FirstName STRING,
+    MiddleInitial STRING,
+    LastName STRING,
+    BirthDate DATE,
+    Gender STRING,
+    CityID INT,
+    HireDate STRING 
+);
+
+
+CREATE OR REPLACE TABLE staging.sales (
+    SalesID INT,
+    SalesPersonID INT,
+    CustomerID INT,
+    ProductID INT,
+    Quantity INT,
+    Discount FLOAT,
+    TotalPrice FLOAT,
+    SalesDate TIMESTAMP,
+    TransactionNumber STRING
+);
+
+-- EXTRACTING THE DATA FROM GCP AND LOADING THEM INTO THE STAGING TABLES RESPECTIVELY
+COPY INTO staging.products FROM @gcs_stage/products.csv 
+FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY='"');
+
+COPY INTO staging.customers FROM @gcs_stage/customers.csv 
+FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY='"');
+
+COPY INTO staging.employees FROM @gcs_stage/employees.csv 
+FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY='"');
+
+COPY INTO staging.sales FROM @gcs_stage/sales.csv 
+FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY='"');
+
+ --Dimensional Modeling
+ -- Product Dimension Table
+CREATE OR REPLACE TABLE dwh.dim_products (
+    ProductKey INT AUTOINCREMENT PRIMARY KEY,
+    ProductID INT UNIQUE,
+    ProductName STRING,
+    Price FLOAT,
+    CategoryID INT,
+    Class STRING,
+    ModifyDate STRING,
+    Resistant STRING,
+    IsAllergic STRING,
+    VitalityDays INT
+);
+
+-- Customer Dimension Table
+CREATE OR REPLACE TABLE dwh.dim_customers (
+    CustomerKey INT AUTOINCREMENT PRIMARY KEY,
+    CustomerID INT UNIQUE,
+    FirstName STRING,
+    MiddleInitial STRING,
+    LastName STRING,
+    CityID INT,
+    Address STRING
+);
+
+-- Employee Dimension Table
+CREATE OR REPLACE TABLE dwh.dim_employees (
+    EmployeeKey INT AUTOINCREMENT PRIMARY KEY,
+    EmployeeID INT UNIQUE,
+    FirstName STRING,
+    MiddleInitial STRING,
+    LastName STRING,
+    BirthDate DATE,
+    Gender STRING,
+    CityID INT,
+    HireDate TIMESTAMP
+);
+
+-- Sales Fact Table
+CREATE OR REPLACE TABLE dwh.fact_sales (
+    SalesKey INT AUTOINCREMENT PRIMARY KEY,
+    SalesID INT UNIQUE,
+    ProductKey INT,
+    CustomerKey INT,
+    EmployeeKey INT,
+    Quantity INT,
+    Discount FLOAT,
+    TotalPrice FLOAT,
+    SalesDate TIMESTAMP,
+    TransactionNumber STRING,
+    FOREIGN KEY (ProductKey) REFERENCES dwh.dim_products(ProductKey),
+    FOREIGN KEY (CustomerKey) REFERENCES dwh.dim_customers(CustomerKey),
+    FOREIGN KEY (EmployeeKey) REFERENCES dwh.dim_employees(EmployeeKey)
+);
+
+-- INSERTING DATA INTO THE DIMENSION PRODUCTS TABLE
+INSERT INTO dwh.dim_products (ProductID, ProductName, Price, CategoryID, Class, ModifyDate, Resistant, IsAllergic, VitalityDays)
+SELECT 
+    ProductID, 
+    ProductName, 
+    Price, 
+    CategoryID, 
+    Class, 
+    ModifyDate, 
+    Resistant, 
+    IsAllergic, 
+    VitalityDays
+FROM staging.products;
+
+-- INSERTING DATA INTO THE DIMENSION CUSTOMERS TABLE
+INSERT INTO dwh.dim_customers (CustomerID, FirstName, MiddleInitial, LastName, CityID, Address)
+SELECT 
+    CustomerID, 
+    FirstName, 
+    MiddleInitial, 
+    LastName, 
+    CityID, 
+    Address
+FROM staging.customers;
+
+
+-- INSERTING DATA INTO THE DIMENSION EMPLOYEES TABLE
+INSERT INTO dwh.dim_employees (EmployeeID, FirstName, MiddleInitial, LastName, BirthDate, Gender, CityID, HireDate)
+SELECT 
+    EmployeeID, 
+    FirstName, 
+    MiddleInitial, 
+    LastName, 
+    BirthDate, 
+    Gender, 
+    CityID, 
+    TRY_CAST(HireDate AS TIMESTAMP)
+FROM staging.employees;
+
+
+-- INSERTING DATA INTO THE FACT SALES TABLE
+INSERT INTO dwh.fact_sales (SalesID, ProductKey, CustomerKey, EmployeeKey, Quantity, Discount, TotalPrice, SalesDate, TransactionNumber)
+SELECT 
+    s.SalesID, 
+    p.ProductKey, 
+    c.CustomerKey, 
+    e.EmployeeKey, 
+    s.Quantity, 
+    s.Discount,
+    s.TotalPrice, 
+    s.SalesDate,
+    s.TransactionNumber
+FROM staging.sales s
+JOIN dwh.dim_products p ON s.ProductID = p.ProductID
+JOIN dwh.dim_customers c ON s.CustomerID = c.CustomerID
+JOIN dwh.dim_employees e ON s.SalesPersonID = e.EmployeeID;
+
+-- CHECKING IF INSERTION WAS SUCCESSFUL OR NOT FOR ALL THE TABLES RESPECTIVELY
+SELECT COUNT(*) AS "COUNT OF DIM_PRODUCTS" FROM dwh.dim_products;
+SELECT COUNT(*) AS "COUNT OF DIM_CUSTOMERS" FROM dwh.dim_customers;
+SELECT COUNT(*) AS "COUNT OF DIM_EMPLOYEES" FROM dwh.dim_employees;
+SELECT COUNT(*) AS "COUNT OF FACT_SALES" FROM dwh.fact_sales;
+
+--Check if staging tables have data:
+SELECT COUNT(*) FROM staging.products;
+SELECT COUNT(*) FROM staging.customers;
+SELECT COUNT(*) FROM staging.employees;
+SELECT COUNT(*) FROM staging.sales;
+
+
+--Analytical Queries
+--QUERY 1 Total Sales per Product
+SELECT p.ProductName, SUM(s.Quantity) AS TotalQuantity, SUM(s.TotalPrice) AS TotalRevenue
+FROM dwh.fact_sales s
+JOIN dwh.dim_products p ON s.ProductKey = p.ProductKey
+GROUP BY p.ProductName
+ORDER BY TotalRevenue DESC;
+
+--QUERY 2 
+-- EMPLOYEE SALE PERFORMANCE (TOP 3)
+SELECT 
+    e.FirstName || ' ' || e.LastName AS EmployeeName, 
+    COUNT(f.SalesID) AS TotalSales,
+    SUM(f.TotalPrice) AS TotalRevenueGenerated
+FROM dwh.fact_sales f
+JOIN dwh.dim_employees e ON f.EmployeeKey = e.EmployeeKey
+GROUP BY EmployeeName
+ORDER BY TotalRevenueGenerated DESC
+LIMIT 3;
+
+--QUERY 3
+-- Customer Segmentation: High-Value Customers (> 2000)
+SELECT 
+    c.FirstName || ' ' || c.LastName AS CustomerName, 
+    COUNT(f.SalesID) AS PurchaseFrequency,
+    SUM(f.TotalPrice) AS TotalSpent
+FROM dwh.fact_sales f
+JOIN dwh.dim_customers c ON f.CustomerKey = c.CustomerKey
+GROUP BY CustomerName
+HAVING SUM(f.TotalPrice) > 1000
+ORDER BY TotalSpent DESC;
+
+--QUERY 4
+-- DISCOUNT IMPACT ON SALES
+SELECT 
+    CASE 
+        WHEN f.Discount = 0 THEN 'No Discount'
+        WHEN f.Discount BETWEEN 0.01 AND 0.10 THEN 'Low Discount (1-10%)'
+        WHEN f.Discount BETWEEN 0.11 AND 0.20 THEN 'Medium Discount (11-20%)'
+        ELSE 'High Discount (20%+)' 
+    END AS DiscountCategory,
+    COUNT(f.SalesID) AS TotalSales,
+    SUM(f.TotalPrice) AS TotalRevenue
+FROM dwh.fact_sales f
+GROUP BY DiscountCategory
+ORDER BY TotalRevenue DESC;
+
+
+
+
+
+
+
+
+
